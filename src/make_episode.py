@@ -41,7 +41,9 @@ paper_txt  = f"{paper_meta.title}\n\n{paper_meta.summary}"
 print(f"🎙️  Generating episode for {paper_id}: {paper_meta.title}")
 
 # ---------- step 2: summarise with ChatGPT ----------
-openai.api_key = OPENAI_KEY
+from openai import OpenAI
+
+client = OpenAI(api_key=OPENAI_KEY)
 msg = [
     {"role": "system",
      "content": ("You are a brilliant science communicator. "
@@ -51,7 +53,7 @@ msg = [
     {"role": "user", "content": paper_txt}
 ]
 
-resp = openai.ChatCompletion.create(
+resp = client.chat.completions.create(
     model="gpt-4o-mini",
     messages=msg,
     temperature=0.5,
