@@ -18,6 +18,7 @@ import openai                    # pip install openai
 import boto3                     # pip install boto3
 from feedgen.feed import FeedGenerator   # pip install feedgen
 from dateutil import tz          # pip install python-dateutil
+import re
 
 def scrub(text: str) -> str:
     """Strip markdown bullets, numbers, dashes at line starts."""
