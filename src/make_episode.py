@@ -94,7 +94,7 @@ for chunk in yield_chunks(summary):
         VoiceId="Joanna"
     )
     audio_segments.append(
-    AudioSegment.from_file(io.BytesIO(resp["AudioStream"].read()), format="mp3")
+    AudioSegment.from_file(io.BytesIO(part["AudioStream"].read()), format="mp3")
 )
 
 
