@@ -109,6 +109,10 @@ audio_bytes = buffer.getvalue()
 
 
 # ---------- step 4: upload MP3 ----------
+s3 = boto3.client("s3", region_name=AWS_REGION)    # ← make sure this exists
+key_mp3     = f"episodes/{paper_id}.mp3"
+public_url  = f"https://{S3_BUCKET}.s3.amazonaws.com/{key_mp3}"
+
 s3.put_object(
     Bucket=S3_BUCKET,
     Key=key_mp3,
