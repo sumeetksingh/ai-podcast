@@ -172,7 +172,7 @@ fe = fg.add_entry()
 fe.id(paper_id)
 fe.title(paper_meta.title)
 fe.description(summary.split('\n')[0])
-fe.pubDate(datetime.datetime.utcnow())
+fe.pubDate(datetime.now(timezone.utc))
 fe.enclosure(public_url, str(len(audio_bytes)), 'audio/mpeg')
 
 # ------------- upload refreshed feed -------------
