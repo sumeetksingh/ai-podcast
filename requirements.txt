@@ -3,3 +3,4 @@ boto3>=1.34.0
 feedgen>=1.0.0
 arxiv==2.1.0
 python-dateutil
+pydub>=0.25.1 
