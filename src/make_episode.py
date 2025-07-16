@@ -19,6 +19,16 @@ import boto3                     # pip install boto3
 from feedgen.feed import FeedGenerator   # pip install feedgen
 from dateutil import tz          # pip install python-dateutil
 
+def scrub(text: str) -> str:
+    """Strip markdown bullets, numbers, dashes at line starts."""
+    cleaned_lines = []
+    for ln in text.splitlines():
+        # remove "- ", "* ", "• ", "1. ", "2) ", etc.
+        ln = re.sub(r'^\s*[-*•\d]+\s*[.)]?\s*', '', ln).strip()
+        if ln:
+            cleaned_lines.append(ln)
+    return " ".join(cleaned_lines)
+
 # ---------- local paths ----------
 BASE_DIR = Path(__file__).resolve().parent.parent
 QUEUE_FILE = BASE_DIR / "papers" / "queue.json"
@@ -47,13 +57,10 @@ client = OpenAI(api_key=OPENAI_KEY)
 msg = [
     {"role": "system",
      "content": ("You are a brilliant science communicator. "
-    "Write a **~1300-word** (roughly 9–10 min when narrated) audio script that: "
-    "• Hooks listeners with a real-world problem\n"
-    "• Explains key concepts clearly\n"
-    "• Walks through the methodology step-by-step\n"
-    "• Highlights at least two practical implications\n"
-    "• Ends with one memorable takeaway\n\n"
-    "Use short sentences; avoid jargon.")},
+    "Write a ~1300-word podcast script (plain sentences, no bullet marks, "
+    "no headings) that: "
+    "• hooks the listener, • explains the paper, "
+    "• tells a story, • ends with a single memorable takeaway.")},
     {"role": "user", "content": paper_txt}
 ]
 
@@ -63,6 +70,8 @@ resp = client.chat.completions.create(
     temperature=0.5,
 )
 summary = resp.choices[0].message.content.strip()
+summary = scrub(summary)
+
 print(f"✅ Got summary ({len(summary.split())} words)")
 
 # ---------- step 3: text-to-speech ----------
@@ -91,7 +100,8 @@ for chunk in yield_chunks(summary):
         Text=ssml,
         TextType="ssml",
         OutputFormat="mp3",
-        VoiceId="Joanna"
+        VoiceId="Matthew",         # Neural male US; try “Olivia” for female
+        Engine="neural"
     )
     audio_segments.append(
     AudioSegment.from_file(io.BytesIO(part["AudioStream"].read()), format="mp3")
