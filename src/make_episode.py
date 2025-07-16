@@ -20,6 +20,7 @@ import openai                    # pip install openai
 import boto3                     # pip install boto3
 from feedgen.feed import FeedGenerator   # pip install feedgen
 from dateutil import tz          # pip install python-dateutil
+from datetime import datetime, timezone
 
 
 def scrub(text: str) -> str:
@@ -162,7 +163,7 @@ if parsed and parsed.entries:
         fe.id(entry.id)
         fe.title(entry.title)
         fe.description(entry.description)
-        fe.pubDate(entry.published)
+        fe.pubDate(datetime.now(timezone.utc))
         enc = entry.enclosures[0]
         fe.enclosure(enc['href'], enc.get('length', '0'), enc.get('type', 'audio/mpeg'))
 
