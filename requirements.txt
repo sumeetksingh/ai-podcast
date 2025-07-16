@@ -1,6 +1,7 @@
 openai>=1.23.0
 boto3>=1.34.0
-feedgen==0.9.0
+feedgen>=1.0.0      # keep the modern release
+feedparser>=6.0.11  # NEW — only 70 kB
 arxiv==2.1.0
 python-dateutil
 pydub>=0.25.1 

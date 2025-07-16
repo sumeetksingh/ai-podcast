@@ -13,6 +13,8 @@ Generate one “paper-of-the-week” podcast episode:
 import os, json, io, datetime, tempfile
 from pathlib import Path
 import re
+import feedparser
+from feedgen.feed import FeedGenerator
 import arxiv                     # pip install arxiv
 import openai                    # pip install openai
 import boto3                     # pip install boto3
@@ -134,20 +136,45 @@ s3.put_object(
 print(f"📤 Uploaded MP3 to {public_url}")
 
 # ---------- step 5: fetch + update RSS feed ----------
-feed_obj = s3.get_object(Bucket=S3_BUCKET, Key="feed.xml")
-xml      = feed_obj["Body"].read()
 
+# ------------- fetch current feed -------------
+try:
+    obj = s3.get_object(Bucket=S3_BUCKET, Key="feed.xml")
+    existing_xml = obj["Body"].read()
+    parsed = feedparser.parse(existing_xml)
+except s3.exceptions.NoSuchKey:
+    parsed = None  # first run – start fresh
+
+# ------------- build a new feed -------------
 fg = FeedGenerator()
-fg.load_extension('podcast')     # optional but enables iTunes tags
-fg.parse(xml)                    # parse existing feed
+fg.load_extension('podcast')
 
+# --- channel / header ---
+fg.title('Weekly AI Paper Snacks')
+fg.link(href=f'https://{S3_BUCKET}.s3.amazonaws.com/feed.xml')
+fg.description('AI/ML/RL papers digested into ~10-min audio.')
+fg.language('en-us')
+
+# --- copy previous items (if any) ---
+if parsed and parsed.entries:
+    for entry in parsed.entries:
+        fe = fg.add_entry()
+        fe.id(entry.id)
+        fe.title(entry.title)
+        fe.description(entry.description)
+        fe.pubDate(entry.published)
+        enc = entry.enclosures[0]
+        fe.enclosure(enc['href'], enc.get('length', '0'), enc.get('type', 'audio/mpeg'))
+
+# --- add today’s episode ---
 fe = fg.add_entry()
 fe.id(paper_id)
 fe.title(paper_meta.title)
-fe.enclosure(public_url, str(len(audio_bytes)), "audio/mpeg")
-fe.pubDate(datetime.datetime.now(tz.tzutc()))
-fe.description(summary.split("\n")[0])        # first sentence as teaser
+fe.description(summary.split('\n')[0])
+fe.pubDate(datetime.datetime.utcnow())
+fe.enclosure(public_url, str(len(audio_bytes)), 'audio/mpeg')
 
+# ------------- upload refreshed feed -------------
 rss_bytes = fg.rss_str(pretty=True)
 s3.put_object(
     Bucket=S3_BUCKET,
