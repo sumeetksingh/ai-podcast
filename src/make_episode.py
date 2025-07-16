@@ -47,9 +47,13 @@ client = OpenAI(api_key=OPENAI_KEY)
 msg = [
     {"role": "system",
      "content": ("You are a brilliant science communicator. "
-                 "Produce a clear, story-style, 6-minute audio script "
-                 "explaining the paper to a general tech audience. "
-                 "Open with a hook, end with one key takeaway.")},
+    "Write a **~1300-word** (roughly 9–10 min when narrated) audio script that: "
+    "• Hooks listeners with a real-world problem\n"
+    "• Explains key concepts clearly\n"
+    "• Walks through the methodology step-by-step\n"
+    "• Highlights at least two practical implications\n"
+    "• Ends with one memorable takeaway\n\n"
+    "Use short sentences; avoid jargon.")},
     {"role": "user", "content": paper_txt}
 ]
 
@@ -62,19 +66,44 @@ summary = resp.choices[0].message.content.strip()
 print(f"✅ Got summary ({len(summary.split())} words)")
 
 # ---------- step 3: text-to-speech ----------
+from pydub import AudioSegment
+import io
+
+MAX_CHARS = 2850   # keep well under 3000 after SSML wrapper
+
+def yield_chunks(text, max_chars=MAX_CHARS):
+    """Yield < max_chars sentences at a time, trying to split on periods."""
+    while text:
+        snippet = text[:max_chars]
+        split_at = snippet.rfind(".")
+        if split_at == -1 or split_at < max_chars * 0.6:
+            split_at = max_chars
+        chunk = text[:split_at + 1].strip()
+        yield chunk
+        text = text[split_at + 1:].lstrip()
+
 polly = boto3.client("polly", region_name=AWS_REGION)
-tts   = polly.synthesize_speech(
-            Text=summary,
-            OutputFormat="mp3",
-            VoiceId="Joanna",             # change voice here if you like
-            Engine="neural"
-       )
+audio_segments = []
 
-audio_bytes = tts["AudioStream"].read()
-key_mp3     = f"episodes/{paper_id}.mp3"
-public_url  = f"https://{S3_BUCKET}.s3.amazonaws.com/{key_mp3}"
+for chunk in yield_chunks(summary):
+    ssml = f"<speak><prosody rate='85%'>{chunk}</prosody></speak>"
+    part = polly.synthesize_speech(
+        Text=ssml,
+        TextType="ssml",
+        OutputFormat="mp3",
+        VoiceId="Joanna"
+    )
+    audio_segments.append(AudioSegment.from_file(part["AudioStream"], format="mp3"))
 
-s3 = boto3.client("s3", region_name=AWS_REGION)
+# join all pieces
+combined = audio_segments[0]
+for seg in audio_segments[1:]:
+    combined += seg         # simple concat; add + seg.fade_in(50) for softer joins
+
+buffer = io.BytesIO()
+combined.export(buffer, format="mp3")
+audio_bytes = buffer.getvalue()
+
 
 # ---------- step 4: upload MP3 ----------
 s3.put_object(
