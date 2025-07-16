@@ -1,5 +1,6 @@
 name: Weekly Episode
-
+permissions:               # ← add
+  contents: write
 on:
   schedule:
     - cron:  '0 14 * * MON'   # 14:00 UTC every Monday
