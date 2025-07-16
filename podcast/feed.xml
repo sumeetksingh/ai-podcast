@@ -1,0 +1,1 @@
+xml <?xml version="1.0" encoding="UTF-8"?> <rss version="2.0"><channel> <title>Weekly AI Paper Snacks</title> <link>https://YOUR-BUCKET.s3.amazonaws.com/feed.xml</link> <description>AI/ML/RL papers digested into 6-minute audio episodes.</description> <language>en-us</language> </channel></rss>

@@ -1,0 +1,3 @@
+text .venv/ __pycache__/ *.pyc .DS_Store
+# Ignore Python virtual environment
+# Ignore Python bytecode files
