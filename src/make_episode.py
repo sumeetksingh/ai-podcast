@@ -230,6 +230,9 @@ def main():
     fg.podcast.itunes_author("Sumeet Singh")
     fg.podcast.itunes_owner(name="Sumeet Kumar Singh", email="sumeetkumarsingh@gmail.com")
     fg.podcast.itunes_image(f"https://ai-podcast-audio-sks.s3.us-east-2.amazonaws.com/ai.jpg")
+    fg.podcast.itunes_category("Technology", "Podcasting")   #   <-- NEW
+    fg.podcast.itunes_explicit("no")        
+
 
     if parsed and parsed.entries:
         for e in parsed.entries:
@@ -240,11 +243,14 @@ def main():
             fe.enclosure(enc['href'], enc.get('length', '0'),
                          enc.get('type', 'audio/mpeg'))
 
+    today_str = datetime.date.today().isoformat()
     fe = fg.add_entry()
-    fe.id(paper_id); fe.title(paper_title)
+    fe.id(f"{paper_id}_{today_str}")                      # unique per episode
+    fe.title(paper_title)
     fe.description(script[:200])
+    fe.link(href=paper.get("pdf") or public_url)          # satisfies <link>
     fe.pubDate(datetime.datetime.now(tz.UTC))
-    fe.enclosure(public_url, str(len(audio_bytes)), 'audio/mpeg')
+    fe.enclosure(public_url, str(len(audio_bytes)), "audio/mpeg")
 
     s3.put_object(Bucket=S3_BUCKET, Key="feed.xml",
                   Body=fg.rss_str(pretty=True), ACL="public-read",
