@@ -39,23 +39,36 @@ s3     = boto3.client("s3",  region_name=AWS_REGION)
 # 1.  Utility helpers
 # ------------------------------------------------------------------
 
+from typing import List
+import arxiv, random, datetime, os
+
+# -------------------------------------------------------------------
+#  Pick a popular AI/ML paper, widening the date window until one is found
+# -------------------------------------------------------------------
+LOOKBACK_DAYS = int(os.getenv("ARXIV_LOOKBACK_DAYS", "365"))
+MAX_RESULTS   = int(os.getenv("ARXIV_MAX_RESULTS", "50"))
+CATEGORIES    = "cat:cs.AI OR cat:cs.LG OR cat:cs.CL OR cat:stat.ML"
+CLIENT        = arxiv.Client()
+
 def pick_paper() -> arxiv.Result:
-    """Return one relevance‑sorted paper within LOOKBACK_DAYS."""
-    date_range = f"[NOW-{LOOKBACK_DAYS}DAY TO NOW]"
-    query = (
-        "cat:cs.AI OR cat:cs.LG OR cat:cs.CL OR cat:stat.ML "
-        f"AND submittedDate:{date_range}"
-    )
-    results = arxiv.Search(
-        query=query,
-        max_results=MAX_RESULTS,
-        sort_by=arxiv.SortCriterion.Relevance,
-    )
-    papers: List[arxiv.Result] = list(results.results())
-    if not papers:
-        raise RuntimeError("No papers found in date window")
-    weights = [max(1, MAX_RESULTS - i) for i, _ in enumerate(papers)]  # bias top
-    return random.choices(papers, weights=weights, k=1)[0]
+    step = 30                         # widen by 30-day increments
+    back  = LOOKBACK_DAYS
+    while back <= 730:                # cap at 2 years
+        date_range = f"[NOW-{back}DAY TO NOW]"
+        query = f"{CATEGORIES} AND submittedDate:{date_range}"
+        search = arxiv.Search(
+            query=query,
+            max_results=MAX_RESULTS,
+            sort_by=arxiv.SortCriterion.Relevance,
+        )
+        papers: List[arxiv.Result] = list(CLIENT.results(search))
+        if papers:
+            # bias toward top 10 but keep variety
+            weights = [max(1, 20-i) for i in range(len(papers))]
+            return random.choices(papers, weights=weights, k=1)[0]
+        back += step                  # widen and try again
+    raise RuntimeError("No papers found in the last 2 years")
+
 
 
 def scrub(text: str) -> str:
