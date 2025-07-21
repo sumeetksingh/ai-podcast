@@ -199,3 +199,62 @@ def main():
     segments = []
     for chunk in chunk_text(script):
         ssml = f"<speak><amazon:domain name='conversational'>{chunk}</amazon:domain></speak>"
+    # --- join & export MP3 ---
+    from pydub import AudioSegment
+    import io, datetime
+
+    final_audio = AudioSegment.empty()
+    for seg in segments:
+        final_audio += seg
+    buf = io.BytesIO()
+    final_audio.export(buf, format="mp3")
+    audio_bytes = buf.getvalue()
+
+    # --- upload to S3 ---
+    key_mp3 = f"episodes/{paper_id}_{datetime.date.today()}.mp3"
+    s3 = boto3.client("s3", region_name=AWS_REGION)
+    public_url = f"https://{S3_BUCKET}.s3.amazonaws.com/{key_mp3}"
+    s3.put_object(Bucket=S3_BUCKET, Key=key_mp3, Body=audio_bytes,
+                  ACL="public-read", ContentType="audio/mpeg")
+    print(f\"📤 Uploaded MP3 to {public_url}\")
+
+    # --- fetch & update RSS ---
+    try:
+        feed_obj = s3.get_object(Bucket=S3_BUCKET, Key=\"feed.xml\")
+        existing_xml = feed_obj[\"Body\"].read()
+        parsed = fp_parse(existing_xml)
+    except s3.exceptions.NoSuchKey:
+        parsed = None
+
+    fg = FeedGenerator()
+    fg.load_extension('podcast')
+    fg.title('Weekly AI Paper Snacks')
+    fg.link(href=f'https://{S3_BUCKET}.s3.amazonaws.com/feed.xml')
+    fg.description('AI/ML/RL papers digested into ~10-min audio.')
+    fg.language('en-us')
+
+    # copy old items
+    if parsed and parsed.entries:
+        for e in parsed.entries:
+            fe = fg.add_entry()
+            fe.id(e.id); fe.title(e.title); fe.description(e.description)
+            fe.pubDate(e.published)
+            enc = e.enclosures[0]
+            fe.enclosure(enc['href'], enc.get('length','0'), enc.get('type','audio/mpeg'))
+
+    # add new item
+    fe = fg.add_entry()
+    fe.id(paper_id)
+    fe.title(paper_title)
+    fe.description(script[:200])
+    fe.pubDate(datetime.datetime.now(datetime.timezone.utc))
+    fe.enclosure(public_url, str(len(audio_bytes)), 'audio/mpeg')
+
+    rss_bytes = fg.rss_str(pretty=True)
+    s3.put_object(Bucket=S3_BUCKET, Key='feed.xml', Body=rss_bytes,
+                  ACL='public-read', ContentType='application/rss+xml')
+    print(\"📝 feed.xml updated\\n🎉 Episode complete!\")
+
+
+if __name__ == \"__main__\":       # <- this line actually runs main()
+    main()
