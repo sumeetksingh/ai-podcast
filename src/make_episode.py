@@ -1,194 +1,206 @@
-#!/usr/bin/env python3
-"""
-Generate one “paper-of-the-week” podcast episode:
+# make_episode.py – fully self‑contained weekly podcast generator
+# ---------------------------------------------------------------
+# Features
+#   • Picks a popular AI/ML/CL paper from arXiv (relevance‑sorted, look‑back window)
+#   • Summarises it with OpenAI, adds intro/outro
+#   • Converts to ~10‑min audio using Amazon Polly Neural voice
+#   • Uploads MP3 to S3 and refreshes feed.xml (no fg.parse dependency)
+#   • Every workflow run – manual or scheduled – publishes a new episode
 
-1. Pick next arXiv paper from papers/queue.json (round-robin via papers/state.json)
-2. Fetch title & abstract with arxiv API
-3. Ask OpenAI (GPT-4o-mini) for a ~6-minute, lay-friendly summary
-4. Convert summary to MP3 with Amazon Polly
-5. Upload MP3 to S3 and update feed.xml (also in S3)
-6. Advance pointer in papers/state.json so next run picks the following paper
-"""
+from __future__ import annotations
 
-import os, json, io, datetime, tempfile
+import os, io, re, random, datetime, textwrap
 from pathlib import Path
-import re
-import feedparser
-from feedgen.feed import FeedGenerator
-import arxiv                     # pip install arxiv
-import openai                    # pip install openai
-import boto3                     # pip install boto3
-from feedgen.feed import FeedGenerator   # pip install feedgen
-from dateutil import tz          # pip install python-dateutil
-from datetime import datetime, timezone
+from typing import List
+
+import boto3
+from pydub import AudioSegment
+import feedparser                          # read existing feed
+from feedgen.feed import FeedGenerator     # write new feed
+from openai import OpenAI
+import arxiv
+
+# ------------------------------------------------------------------
+# 0.  Configuration via environment variables / workflow secrets
+# ------------------------------------------------------------------
+OPENAI_KEY           = os.environ["OPENAI_API_KEY"]
+S3_BUCKET            = os.environ["S3_BUCKET"]
+AWS_REGION           = os.getenv("AWS_REGION", "us-east-1")
+VOICE_ID             = os.getenv("VOICE_ID", "Matthew")      # Neural male US
+LOOKBACK_DAYS        = int(os.getenv("ARXIV_LOOKBACK_DAYS", "365"))
+MAX_RESULTS          = int(os.getenv("ARXIV_MAX_RESULTS", "50"))
+SCRIPT_WORD_TARGET   = int(os.getenv("SCRIPT_WORDS", "1300"))
+
+client = OpenAI(api_key=OPENAI_KEY)
+polly  = boto3.client("polly", region_name=AWS_REGION)
+s3     = boto3.client("s3",  region_name=AWS_REGION)
+
+# ------------------------------------------------------------------
+# 1.  Utility helpers
+# ------------------------------------------------------------------
+
+def pick_paper() -> arxiv.Result:
+    """Return one relevance‑sorted paper within LOOKBACK_DAYS."""
+    date_range = f"[NOW-{LOOKBACK_DAYS}DAY TO NOW]"
+    query = (
+        "cat:cs.AI OR cat:cs.LG OR cat:cs.CL OR cat:stat.ML "
+        f"AND submittedDate:{date_range}"
+    )
+    results = arxiv.Search(
+        query=query,
+        max_results=MAX_RESULTS,
+        sort_by=arxiv.SortCriterion.Relevance,
+    )
+    papers: List[arxiv.Result] = list(results.results())
+    if not papers:
+        raise RuntimeError("No papers found in date window")
+    weights = [max(1, MAX_RESULTS - i) for i, _ in enumerate(papers)]  # bias top
+    return random.choices(papers, weights=weights, k=1)[0]
 
 
 def scrub(text: str) -> str:
-    """Strip markdown bullets, numbers, dashes at line starts."""
-    cleaned_lines = []
+    """Remove bullets / list markers so Polly won't read them verbatim."""
+    cleaned = []
     for ln in text.splitlines():
-        # remove "- ", "* ", "• ", "1. ", "2) ", etc.
-        ln = re.sub(r'^\s*[-*•\d]+\s*[.)]?\s*', '', ln).strip()
+        ln = re.sub(r"^\s*[-*•\d]+[.)]?\s*", "", ln).strip()
         if ln:
-            cleaned_lines.append(ln)
-    return " ".join(cleaned_lines)
+            cleaned.append(ln)
+    return " ".join(cleaned)
 
-# ---------- local paths ----------
-BASE_DIR = Path(__file__).resolve().parent.parent
-QUEUE_FILE = BASE_DIR / "papers" / "queue.json"
-STATE_FILE = BASE_DIR / "papers" / "state.json"
 
-# ---------- env vars coming from GitHub Secrets ----------
-AWS_REGION   = os.environ["AWS_REGION"]
-S3_BUCKET    = os.environ["S3_BUCKET"]
-OPENAI_KEY   = os.environ["OPENAI_API_KEY"]
+# For Polly: split SSML into <3K char chunks (Neural limit 10K, but safe)
+MAX_CHARS = 2850
 
-# ---------- step 1: pick the next paper ----------
-queue = json.loads(Path(QUEUE_FILE).read_text())
-state = json.loads(Path(STATE_FILE).read_text())
-idx   = state.get("next_index", 0) % len(queue)
-
-paper_id   = queue[idx]["id"]
-paper_meta = next(arxiv.Search(id_list=[paper_id]).results())
-paper_txt  = f"{paper_meta.title}\n\n{paper_meta.summary}"
-
-print(f"🎙️  Generating episode for {paper_id}: {paper_meta.title}")
-
-# ---------- step 2: summarise with ChatGPT ----------
-from openai import OpenAI
-
-client = OpenAI(api_key=OPENAI_KEY)
-msg = [
-    {"role": "system",
-     "content": ("You are a brilliant science communicator. "
-    "Write a ~1300-word podcast script (plain sentences, no bullet marks, "
-    "no headings) that: "
-    "• hooks the listener, • explains the paper, "
-    "• tells a story, • ends with a single memorable takeaway.")},
-    {"role": "user", "content": paper_txt}
-]
-
-resp = client.chat.completions.create(
-    model="gpt-4o-mini",
-    messages=msg,
-    temperature=0.5,
-)
-summary = resp.choices[0].message.content.strip()
-summary = scrub(summary)
-
-print(f"✅ Got summary ({len(summary.split())} words)")
-
-# ---------- step 3: text-to-speech ----------
-from pydub import AudioSegment
-import io
-
-MAX_CHARS = 2850   # keep well under 3000 after SSML wrapper
-
-def yield_chunks(text, max_chars=MAX_CHARS):
-    """Yield < max_chars sentences at a time, trying to split on periods."""
+def yield_chunks(text: str):
     while text:
-        snippet = text[:max_chars]
-        split_at = snippet.rfind(".")
-        if split_at == -1 or split_at < max_chars * 0.6:
-            split_at = max_chars
-        chunk = text[:split_at + 1].strip()
-        yield chunk
+        snippet = text[:MAX_CHARS]
+        split_at = snippet.rfind('.')
+        if split_at == -1 or split_at < MAX_CHARS * 0.6:
+            split_at = MAX_CHARS
+        yield text[:split_at + 1].strip()
         text = text[split_at + 1:].lstrip()
 
-polly = boto3.client("polly", region_name=AWS_REGION)
-audio_segments = []
+# ------------------------------------------------------------------
+# 2.  Main flow
+# ------------------------------------------------------------------
 
-for chunk in yield_chunks(summary):
-    ssml = f"<speak><prosody rate='85%'>{chunk}</prosody></speak>"
-    part = polly.synthesize_speech(
-        Text=ssml,
-        TextType="ssml",
-        OutputFormat="mp3",
-        VoiceId="Matthew",         # Neural male US; try “Olivia” for female
-        Engine="neural"
+def main() -> None:
+    paper = pick_paper()
+    paper_id  = paper.get_short_id()
+    title     = paper.title.strip().replace('\n', ' ')
+    abstract  = paper.summary.replace('\n', ' ')
+    print(f"📰 Picked paper {paper_id}: {title}")
+
+    # ----- 2a. Summarise with OpenAI -----
+    SYSTEM_PROMPT = (
+        "You are a brilliant science communicator. "
+        f"Write a ~{SCRIPT_WORD_TARGET}-word podcast script (no bullet marks, plain sentences) "
+        "that hooks the listener, explains the methods, key results, and practical implications, "
+        "and ends with one memorable takeaway."
     )
-    audio_segments.append(
-    AudioSegment.from_file(io.BytesIO(part["AudioStream"].read()), format="mp3")
-)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user",   "content": abstract}
+    ]
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        temperature=0.5,
+    )
+    summary = resp.choices[0].message.content.strip()
+
+    # ----- 2b. Assemble full script with intro/outro -----
+    intro  = (
+        f"Welcome to AI Paper Snacks, where we dive into research that shapes the future. "
+        f"Today’s topic: {title}. "
+    )
+    outro  = (
+        "That’s all for this episode. Follow the feed and join us next week for another deep dive. "
+        "Thanks for listening!"
+    )
+    script = scrub(f"{intro} {summary} {outro}")
+    word_count = len(script.split())
+    print(f"✅ Script ready ({word_count} words)")
+
+    # ----- 2c. Text‑to‑speech with Neural Polly -----
+    audio_segments = []
+    for chunk in yield_chunks(script):
+        ssml = (
+            "<speak><amazon:domain name='conversational'>" + chunk + "</amazon:domain></speak>"
+        )
+        tts = polly.synthesize_speech(
+            Text=ssml,
+            TextType="ssml",
+            OutputFormat="mp3",
+            VoiceId=VOICE_ID,
+            Engine="neural",
+        )
+        audio_segments.append(
+            AudioSegment.from_file(io.BytesIO(tts["AudioStream"].read()), format="mp3")
+        )
+    combined = audio_segments[0]
+    for seg in audio_segments[1:]:
+        combined += seg
+    buf = io.BytesIO()
+    combined.export(buf, format="mp3")
+    audio_bytes = buf.getvalue()
+
+    # filename: <id>_YYYY-MM-DD.mp3
+    today_str = datetime.date.today().isoformat()
+    key_mp3   = f"episodes/{paper_id}_{today_str}.mp3"
+    public_url = f"https://{S3_BUCKET}.s3.amazonaws.com/{key_mp3}"
+
+    s3.put_object(
+        Bucket=S3_BUCKET,
+        Key=key_mp3,
+        Body=audio_bytes,
+        ACL="public-read",
+        ContentType="audio/mpeg",
+    )
+    print(f"📤 Uploaded MP3 to {public_url}")
+
+    # ----- 2d. Refresh feed.xml (read with feedparser) -----
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key="feed.xml")
+        parsed = feedparser.parse(obj["Body"].read())
+    except s3.exceptions.NoSuchKey:
+        parsed = None
+
+    fg = FeedGenerator()
+    fg.load_extension('podcast')
+    fg.title('AI Paper Snacks')
+    fg.link(href=f'https://{S3_BUCKET}.s3.amazonaws.com/feed.xml')
+    fg.description('10‑minute audiocasts of impactful AI/ML research')
+    fg.language('en-us')
+
+    if parsed and parsed.entries:
+        for entry in parsed.entries:
+            fe_old = fg.add_entry()
+            fe_old.id(entry.id)
+            fe_old.title(entry.title)
+            fe_old.description(entry.description)
+            fe_old.pubDate(entry.published)
+            enc = entry.enclosures[0]
+            fe_old.enclosure(enc['href'], enc.get('length', '0'), enc.get('type', 'audio/mpeg'))
+
+    fe = fg.add_entry()
+    fe.id(paper_id)
+    fe.title(title)
+    fe.description(script[:200] + '…')
+    fe.pubDate(datetime.datetime.now(datetime.timezone.utc))
+    fe.enclosure(public_url, str(len(audio_bytes)), 'audio/mpeg')
+
+    rss_bytes = fg.rss_str(pretty=True)
+    s3.put_object(
+        Bucket=S3_BUCKET,
+        Key="feed.xml",
+        Body=rss_bytes,
+        ACL="public-read",
+        ContentType="application/rss+xml",
+    )
+    print("📝 feed.xml updated")
+    print("🎉 Episode complete!")
 
 
-# join all pieces
-combined = audio_segments[0]
-for seg in audio_segments[1:]:
-    combined += seg         # simple concat; add + seg.fade_in(50) for softer joins
-
-buffer = io.BytesIO()
-combined.export(buffer, format="mp3")
-audio_bytes = buffer.getvalue()
-
-
-# ---------- step 4: upload MP3 ----------
-s3 = boto3.client("s3", region_name=AWS_REGION)    # ← make sure this exists
-key_mp3     = f"episodes/{paper_id}.mp3"
-public_url  = f"https://{S3_BUCKET}.s3.amazonaws.com/{key_mp3}"
-
-s3.put_object(
-    Bucket=S3_BUCKET,
-    Key=key_mp3,
-    Body=audio_bytes,
-    ACL="public-read",
-    ContentType="audio/mpeg"
-)
-print(f"📤 Uploaded MP3 to {public_url}")
-
-# ---------- step 5: fetch + update RSS feed ----------
-
-# ------------- fetch current feed -------------
-try:
-    obj = s3.get_object(Bucket=S3_BUCKET, Key="feed.xml")
-    existing_xml = obj["Body"].read()
-    parsed = feedparser.parse(existing_xml)
-except s3.exceptions.NoSuchKey:
-    parsed = None  # first run – start fresh
-
-# ------------- build a new feed -------------
-fg = FeedGenerator()
-fg.load_extension('podcast')
-
-# --- channel / header ---
-fg.title('Weekly AI Paper Snacks')
-fg.link(href=f'https://{S3_BUCKET}.s3.amazonaws.com/feed.xml')
-fg.description('AI/ML/RL papers digested into ~10-min audio.')
-fg.language('en-us')
-
-# --- copy previous items (if any) ---
-if parsed and parsed.entries:
-    for entry in parsed.entries:
-        fe = fg.add_entry()
-        fe.id(entry.id)
-        fe.title(entry.title)
-        fe.description(entry.description)
-        fe.pubDate(datetime.now(timezone.utc))
-        enc = entry.enclosures[0]
-        fe.enclosure(enc['href'], enc.get('length', '0'), enc.get('type', 'audio/mpeg'))
-
-# --- add today’s episode ---
-fe = fg.add_entry()
-fe.id(paper_id)
-fe.title(paper_meta.title)
-fe.description(summary.split('\n')[0])
-fe.pubDate(datetime.now(timezone.utc))
-fe.enclosure(public_url, str(len(audio_bytes)), 'audio/mpeg')
-
-# ------------- upload refreshed feed -------------
-rss_bytes = fg.rss_str(pretty=True)
-s3.put_object(
-    Bucket=S3_BUCKET,
-    Key="feed.xml",
-    Body=rss_bytes,
-    ACL="public-read",
-    ContentType="application/rss+xml"
-)
-print("📝 feed.xml updated")
-
-# ---------- step 6: advance pointer ----------
-state["next_index"] = idx + 1
-STATE_FILE.write_text(json.dumps(state, indent=2))
-print("🔄 state.json advanced")
-
-print("🎉 Episode complete!")
+if __name__ == "__main__":
+    main()
