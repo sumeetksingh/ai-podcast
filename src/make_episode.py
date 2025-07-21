@@ -227,6 +227,9 @@ def main():
     fg.link(href=f"https://{S3_BUCKET}.s3.amazonaws.com/feed.xml")
     fg.description("AI/ML/RL papers digested into ~10-min audio.")
     fg.language("en-us")
+    fg.podcast.itunes_author("Sumeet Singh")
+    fg.podcast.itunes_owner(name="Sumeet Kumar Singh", email="sumeetkumarsingh.com")
+    fg.podcast.itunes_image(f"https://ai-podcast-audio-sks.s3.us-east-2.amazonaws.com/ai.jpg")
 
     if parsed and parsed.entries:
         for e in parsed.entries:
