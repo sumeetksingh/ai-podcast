@@ -87,50 +87,49 @@ def build_paper_pool(max_per: int = 25) -> List[dict]:
                          "summary": p["abstract"], "pdf": p.get("url_pdf")})
     print("PapersWithCode:", len(pwc or []))
 
-    # Semantic Scholar top‑cited current year
-    ss = safe_fetch("https://api.semanticscholar.org/graph/v1/paper/search",
-                    params={"query": "machine learning", "limit": max_per,
-                            "year": datetime.date.today().year,
-                            "fields": "title,abstract,url"})
-    if ss:
-        for p in ss.get("data", []):
-            pool.append({"title": p["title"], "id": p["paperId"],
-                         "summary": p.get("abstract", ""), "pdf": p.get("url")})
-    print("SemanticScholar:", len(ss.get("data", []) if ss else 0))
+# Semantic Scholar top‑cited current year
+ss = safe_fetch("https://api.semanticscholar.org/graph/v1/paper/search",
+                params={"query": "machine learning", "limit": max_per,
+                        "year": datetime.date.today().year,
+                        "fields": "title,abstract,url"})
+if ss:
+    for p in ss.get("data", []):
+        pool.append({"title": p["title"], "id": p["paperId"],
+                     "summary": p.get("abstract", ""), "pdf": p.get("url")})
+print("SemanticScholar:", len(ss.get("data", []) if ss else 0))
 
-    # OpenAlex AI concept
-    oa = safe_fetch("https://api.openalex.org/works",
+# ---- 4. OpenAlex ----
+oa = safe_fetch("https://api.openalex.org/works",
                 params={"filter": "concept.id:C41008148", "per_page": max_per})
 count_oa = 0
-if oa:
-    for w in oa.get('results', []):
-        loc = w.get("primary_location") or {}
-        src = loc.get("source") or {}
-        pdf_url = src.get("url", "")
-        pool.append({
-            "title": w.get('title', 'Untitled'),
-            "id": w.get('id', str(len(pool))),
-            "summary": '',
-            "pdf": pdf_url
-        })
+if oa and "results" in oa:
+    for w in oa["results"]:
+        pool.append({"title": w.get("title", ""), "id": w.get("id", ""),
+                     "summary": w.get("abstract_inverted_index", ""), "pdf": w.get("primary_location", {}).get("pdf_url", "")})
         count_oa += 1
 print(f"OpenAlex: {count_oa}")
 
-    # OpenReview ICLR‑24
-    orv = safe_fetch("https://api.openreview.net/notes",
-                     params={"invitation": "ICLR.cc/2024/Conference/-/Blind_Submission",
-                             "limit": max_per})
-    if orv:
-        for n in orv.get("notes", []):
-            pool.append({"title": n["content"]["title"], "id": n["id"],
-                         "summary": n["content"]["abstract"], "pdf": n["content"]["pdf"]})
-    print("OpenReview:", len(orv.get("notes", []) if orv else 0))
+# ---- 5. OpenReview (ICLR 2024) ----
+orv = safe_fetch(
+    "https://api.openreview.net/notes",
+    params={
+        "invitation": "ICLR.cc/2024/Conference/-/Blind_Submission",
+        "limit": max_per,
+    },
+)
+count_or = 0
+if orv:
+    for n in orv.get("notes", []):
+        pool.append({
+            "title": n["content"]["title"],
+            "id": n["id"],
+            "summary": n["content"]["abstract"],
+            "pdf": n["content"]["pdf"],
+        })
+        count_or += 1
+print(f"OpenReview: {count_or}")
 
-    if not pool:
-        raise RuntimeError("All sources returned zero papers — network blocked?")
 
-    print("🥡  Total pool size:", len(pool))
-    return pool
 
 
 def pick_paper() -> dict:
