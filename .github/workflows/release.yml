@@ -1,20 +1,26 @@
 name: Weekly Episode
-permissions:               # ← add
-  contents: write
+
+permissions:
+  contents: write         # so the workflow can push if you keep that step
+
 on:
   schedule:
-    - cron:  '0 14 * * MON'   # 14:00 UTC every Monday
-  workflow_dispatch:          # manual “Run workflow” button
+    - cron: '0 14 * * MON'
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      AWS_REGION: us-east-1
+      ARXIV_LOOKBACK_DAYS: 365
+      ARXIV_MAX_RESULTS: 50
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Install ffmpeg                # <-- new step
+
+      - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -25,20 +31,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Make episode
+      - name: Run generator
         env:
-          OPENAI_API_KEY:      ${{ secrets.OPENAI_API_KEY }}
-          AWS_ACCESS_KEY_ID:   ${{ secrets.AWS_ACCESS_KEY_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION:          ${{ secrets.AWS_REGION }}
-          S3_BUCKET:           ${{ secrets.S3_BUCKET }}
-        run: |
-          python src/make_episode.py
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+        run: python src/make_episode.py
 
-      - name: Commit updated pointer
-        run: |
-          git config --global user.name  "Episode-Bot"
-          git config --global user.email "bot@example.com"
-          git add papers/state.json
-          git commit -m "Advance pointer" || echo "nothing to commit"
-          git push
+      # Remove this entire step if you don't need to push anything any more
+      # - name: Commit feed or other artifacts (optional)
+      #   run: |
+      #     git config --global user.email "bot@example.com"
+      #     git config --global user.name "Episode-Bot"
+      #     git add .
+      #     git commit -m "Auto-update" || echo "no changes"
+      #     git push

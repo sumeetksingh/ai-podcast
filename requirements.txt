@@ -4,3 +4,4 @@ feedgen>=1.0.0      # keep the modern release
 arxiv==2.1.0
 python-dateutil
 pydub>=0.25.1 
+feedparser>=6.0.10
