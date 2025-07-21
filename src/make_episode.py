@@ -53,15 +53,16 @@ def scrub(text: str) -> str:
     return " ".join([ln for ln in lines if ln])
 
 
-def safe_fetch(url: str, params: dict | None = None, timeout=10, tries=2):
+def safe_fetch(url: str, params=None, tries=2, timeout=10):
     for attempt in range(tries):
         try:
-            return requests.get(url, params=params, timeout=timeout).json()
+            r = requests.get(url, params=params, timeout=timeout)
+            r.raise_for_status()
+            return r.json()
         except Exception as e:
-            print(f"⚠️  {url} attempt {attempt+1}/{tries} failed: {e}")
+            print(f"⚠️  {url} attempt {attempt+1}/{tries} failed:", e)
             time.sleep(1)
     return None
-
 
 # ----------- Paper pool builder --------
 
@@ -99,12 +100,21 @@ def build_paper_pool(max_per: int = 25) -> List[dict]:
 
     # OpenAlex AI concept
     oa = safe_fetch("https://api.openalex.org/works",
-                    params={"filter": "concept.id:C41008148", "per_page": max_per})
-    if oa:
-        for w in oa.get("results", []):
-            pool.append({"title": w["title"], "id": w["id"],
-                         "summary": "", "pdf": w["primary_location"]["source"].get("url")})
-    print("OpenAlex:", len(oa.get("results", []) if oa else 0))
+                params={"filter": "concept.id:C41008148", "per_page": max_per})
+count_oa = 0
+if oa:
+    for w in oa.get('results', []):
+        loc = w.get("primary_location") or {}
+        src = loc.get("source") or {}
+        pdf_url = src.get("url", "")
+        pool.append({
+            "title": w.get('title', 'Untitled'),
+            "id": w.get('id', str(len(pool))),
+            "summary": '',
+            "pdf": pdf_url
+        })
+        count_oa += 1
+print(f"OpenAlex: {count_oa}")
 
     # OpenReview ICLR‑24
     orv = safe_fetch("https://api.openreview.net/notes",
